@@ -1,0 +1,10 @@
+__pycache__/
+build/
+dist/
+*.spec
+smoke/
+seatmaps/
+out/
+*.har
+!tests/sample/sample.har
+tjoy_seatmap/fonts/

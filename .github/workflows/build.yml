@@ -1,0 +1,165 @@
+name: Build
+
+# 次のどちらかで実行します。
+#  1. GitHub Release を公開(published)したとき: タグ名から版番号を決めてビルドし、
+#     そのRelease に成果物を自動で添付します。
+#       例: タグ v0.1.0 → 版番号 0.1.0 → tjoy-seatmap-v0.1.0-windows-x64.zip など
+#  2. 手動実行(Actions > Build > Run workflow): テスト用のビルドです。
+#     版番号を入力して、成果物は Artifacts にだけ出します(Release には付けません)。
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: ビルド対象
+        type: choice
+        options: [windows, linux, both]
+        default: both
+      version:
+        description: 版番号 (例 0.1.0)。テスト用なので空欄なら 0.0.0-dev
+        type: string
+        default: 0.0.0-dev
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    if: ${{ github.event_name == 'release' || inputs.target == 'windows' || inputs.target == 'both' }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Determine version
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$EVENT" = "release" ]; then RAW="$RELEASE_TAG"; else RAW="${INPUT_VERSION:-0.0.0-dev}"; fi
+          python tools/set_version.py "$RAW"
+          echo "VERSION=${RAW#v}" >> "$GITHUB_ENV"
+      - run: python -m pip install -r requirements.txt pyinstaller
+      - name: Unit tests
+        run: python -m unittest discover -s tests
+      - name: Build GUI (exe)
+        run: >
+          pyinstaller --noconfirm --clean --onefile --windowed
+          --name tjoy-seatmap-gui --hidden-import PIL._tkinter_finder
+          --icon assets/icon/icon.ico
+          --add-data "tjoy_seatmap/assets;tjoy_seatmap/assets" run_gui.py
+      - name: Build CLI (exe)
+        run: >
+          pyinstaller --noconfirm --onefile --console --name tjoy-seatmap-cli
+          --icon assets/icon/icon.ico
+          --add-data "tjoy_seatmap/assets;tjoy_seatmap/assets" run_cli.py
+      - name: Smoke test
+        shell: pwsh
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          ./dist/tjoy-seatmap-cli.exe tests/sample/sample.har -o smoke
+          if (-not (Get-ChildItem smoke -Filter *.png)) { throw "PNG not generated" }
+          if (-not (Get-ChildItem smoke -Filter *.svg)) { throw "SVG not generated" }
+          $ver = ./dist/tjoy-seatmap-cli.exe --version | Out-String
+          if ($ver -notmatch [regex]::Escape($env:VERSION)) { throw "version mismatch: $ver" }
+          $info = ./dist/tjoy-seatmap-cli.exe --self-check | Out-String
+          Write-Host $info
+          if ($info -notmatch 'render=ok') { throw "rendering failed in exe: $info" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tjoy-seatmap-windows-x64
+          path: |
+            dist/tjoy-seatmap-gui.exe
+            dist/tjoy-seatmap-cli.exe
+
+  linux:
+    if: ${{ github.event_name == 'release' || inputs.target == 'linux' || inputs.target == 'both' }}
+    # 古めのglibcでビルドすると新旧ディストリで動かしやすい
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Determine version
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$EVENT" = "release" ]; then RAW="$RELEASE_TAG"; else RAW="${INPUT_VERSION:-0.0.0-dev}"; fi
+          python tools/set_version.py "$RAW"
+          echo "VERSION=${RAW#v}" >> "$GITHUB_ENV"
+      - name: System packages (tkinter, Japanese font)
+        run: sudo apt-get update && sudo apt-get install -y python3-tk tk fonts-noto-cjk
+      - run: python -m pip install -r requirements.txt pyinstaller
+      - name: Bundle Japanese font (OFL)
+        # 利用者のLinuxに日本語フォントが無くてもPNGが日本語になるよう同梱する
+        run: |
+          mkdir -p tjoy_seatmap/fonts
+          cp "$(fc-list :lang=ja file | grep -i 'NotoSansCJK.*Regular' | head -n1 | cut -d: -f1)" tjoy_seatmap/fonts/ || echo "font bundle skipped"
+      - name: Unit tests
+        run: python -m unittest discover -s tests
+      - name: Build GUI
+        run: >
+          pyinstaller --noconfirm --clean --onefile --windowed
+          --name tjoy-seatmap-gui --hidden-import PIL._tkinter_finder
+          --add-data "tjoy_seatmap/assets:tjoy_seatmap/assets"
+          --add-data "tjoy_seatmap/fonts:tjoy_seatmap/fonts" run_gui.py
+      - name: Build CLI
+        run: >
+          pyinstaller --noconfirm --onefile --console
+          --name tjoy-seatmap-cli
+          --add-data "tjoy_seatmap/assets:tjoy_seatmap/assets"
+          --add-data "tjoy_seatmap/fonts:tjoy_seatmap/fonts" run_cli.py
+      - name: Smoke test
+        run: |
+          ./dist/tjoy-seatmap-cli tests/sample/sample.har -o smoke -s plain
+          ls smoke/*.png smoke/*.svg
+          ./dist/tjoy-seatmap-cli --version | grep -F "$VERSION"
+          info="$(./dist/tjoy-seatmap-cli --self-check)"
+          echo "$info"
+          echo "$info" | grep -E 'render=ok'
+      - name: Package (keep executable bit)
+        run: tar -C dist -czf tjoy-seatmap-linux-x64.tar.gz tjoy-seatmap-gui tjoy-seatmap-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tjoy-seatmap-linux-x64
+          path: tjoy-seatmap-linux-x64.tar.gz
+
+  # Release が公開されたときだけ、成果物を Release に添付する(ビルドはやり直さない)
+  publish:
+    needs: [windows, linux]
+    if: ${{ github.event_name == 'release' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # Release へのファイル添付
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: tjoy-seatmap-windows-x64
+          path: artifacts/windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: tjoy-seatmap-linux-x64
+          path: artifacts/linux
+      - name: Prepare release assets
+        run: |
+          mkdir -p assets
+          (cd artifacts/windows && zip -j "$GITHUB_WORKSPACE/assets/tjoy-seatmap-${TAG}-windows-x64.zip" *.exe)
+          cp artifacts/linux/tjoy-seatmap-linux-x64.tar.gz "assets/tjoy-seatmap-${TAG}-linux-x64.tar.gz"
+          ls -lh assets
+      - name: Attach to Release
+        run: gh release upload "$TAG" assets/* --clobber
