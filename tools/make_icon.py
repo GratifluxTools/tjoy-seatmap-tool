@@ -125,7 +125,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--accent", default="#F5C542", help="特別席の色 (既定: ゴールド)")
     ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "..", "assets", "icon"))
-    ap.add_argument("--embed", action="store_true", help="GUIのウィンドウ用に tjoy_seatmap/icon_data.py も更新する")
+    ap.add_argument("--embed", action="store_true", help="GUIのウィンドウ用に toho_seatmap/icon_data.py も更新する")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     draw_png(a.accent, 1024).save(os.path.join(a.out, "icon-1024.png"))
@@ -144,7 +144,7 @@ def main():
         buf = io.BytesIO()
         draw_png(a.accent, 128).save(buf, "PNG")
         b64 = base64.b64encode(buf.getvalue()).decode()
-        path = os.path.join(os.path.dirname(__file__), "..", "tjoy_seatmap", "icon_data.py")
+        path = os.path.join(os.path.dirname(__file__), "..", "toho_seatmap", "icon_data.py")
         with open(path, "w", encoding="utf-8") as f:
             f.write('"""GUIウィンドウ用アイコン(128px PNG, base64)。tools/make_icon.py --embed で自動生成。"""\n\nPNG_B64 = (\n')
             for i in range(0, len(b64), 100):

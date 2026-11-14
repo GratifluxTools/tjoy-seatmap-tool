@@ -1,204 +1,232 @@
-"""読み込み・出力の処理（CLI と GUI の共通部分）。画面(tkinter)には依存しない。"""
+"""HAR群 -> 座席表(SeatMap) -> 画像ファイル、までの処理。CLI/GUI共通。"""
+from __future__ import annotations
+
+import dataclasses
+import json
 import os
-import re
+from collections import Counter
 from dataclasses import dataclass, field
 
-from .har import find_schedule_pages, find_seat_pages, iter_captures
-from .render import render_official_png, render_official_svg, render_plain_png, render_plain_svg, to_webp_bytes
-from .schedule import parse_schedule
-from .seatpage import parse_seat_page
-
-STYLES = ("official", "plain")
-
-
-@dataclass
-class ScreenItem:
-    key: str
-    screen: object                  # SeatScreen
-    official: bytes | None = None   # 公式の座席表画像（PNG/JPEG のバイト列）
-    selected: bool = True
-
-    @property
-    def label(self):
-        s = self.screen
-        extra = f"  {s.film_title}" if s.film_title else ""
-        return f"{s.theater_name} {s.screen_label}{extra}"
-
-    @property
-    def stem(self):
-        """出力ファイル名の基になる名前。TOHO版と同じく、入力ファイル名（拡張子なし）を使う。
-        例: tjoy_tokorozawa_4.har（zipの中のファイルなら、その名前） → tjoy_tokorozawa_4"""
-        src = self.screen.source or "seatmap"
-        if "!" in src:
-            src = src.split("!")[-1]
-        return os.path.splitext(os.path.basename(src))[0]
+from . import assets, hario, theaters
+from .layout import Box, trim_box
+from .official import build_official
+from .render_png import FontSet, make_fontset, render_png  # noqa: F401 (make_fontset は CLI/GUI から使う)
+from .render_svg import render_svg
+from .scene import Options, build_scene
+from .seatparse import SeatPageError, parse_seat_html
+from .styles import style_of
 
 
 @dataclass
-class LoadResult:
-    items: list = field(default_factory=list)
+class SeatMap:
+    stem: str
+    site_cd: str
+    screen_cd: str
+    screen_no: str
+    box: Box
+    source: str
+    params: dict
+    stated: tuple | None  # (席数, 車いす席数) ページ表記
+    facility: str  # 特別設備 (例: IMAXⓇ Dolby AtmosⓇ)
+    show_date: str = ""
+    show_time: str = ""
     warnings: list = field(default_factory=list)
-    schedule_count: int = 0
+    theater_override: str | None = None  # 手動指定の劇場名
+    fetch_missing: bool = False
+    bg: object = None  # 公式の座席表画像 (PIL.Image, RGB) / None
+    resources: dict = field(default_factory=dict)
 
+    @property
+    def counts(self) -> Counter:
+        c = Counter()
+        for p in self.box.seats:
+            c[style_of(p.seat.kind, p.seat.blocked)[0]] += 1
+        return c
 
-def _schedule_titles(paths):
-    titles, count = {}, 0
-    for pg in find_schedule_pages(iter_captures(paths)):
-        r = parse_schedule(pg["html"], slug=pg["slug"])
-        for sh in r["showings"]:
-            count += 1
-            if sh.get("performance_id") and sh.get("title"):
-                titles[sh["performance_id"]] = sh["title"]
-    return titles, count
+    @property
+    def n_seats(self) -> int:
+        return len(self.box.seats)
 
+    @property
+    def n_wheelchair(self) -> int:
+        return self.stated[1] if self.stated else 0
 
-def load_screens(paths, schedule_paths=None):
-    """座席HAR/ZIP/フォルダを読み込み、画面一覧を返す。"""
-    res = LoadResult()
-    titles, res.schedule_count = _schedule_titles(schedule_paths or [])
-    seen = set()
-    for pg in find_seat_pages(iter_captures(paths)):
-        try:
-            scr = parse_seat_page(pg["html"], source=pg["source"], slug=pg["slug"], reservation=pg["reservation"])
-        except ValueError as e:
-            res.warnings.append(f"{pg['source']}: {e}")
-            continue
-        if not scr.film_title and pg["reservation"]:
-            scr.film_title = titles.get(pg["reservation"]["performance_id"])
-        ident = (scr.theater_key, scr.screen_no, scr.show_date, scr.show_time)
-        if ident in seen:
-            res.warnings.append(f"重複を除外: {pg['source']}")
-            continue
-        seen.add(ident)
-        for w in scr.warnings:
-            res.warnings.append(f"{pg['source']}: {w}")
-        res.items.append(ScreenItem(key="", screen=scr))
-    res.items.sort(key=lambda it: (it.screen.theater_key, it.screen.screen_no))
-    for i, it in enumerate(res.items):
-        it.key = str(i)
-    return res
+    def theater_name(self, lang: str = "ja") -> str:
+        return theaters.name_for(self.site_cd, lang, self.theater_override)
 
+    @property
+    def theater_known(self) -> bool:
+        return bool(self.theater_override and self.theater_override.strip()) or theaters.is_known(self.site_cd)
 
-def match_official(folder, item):
-    """フォルダ内から、画面に対応する公式画像のパスを探す。
+    def screen_label(self, lang: str = "ja") -> str:
+        if lang == "ja":
+            return f"シアター{self.screen_no}"
+        return f"Theater {self.screen_no}"
 
-    対応する名前:
-      - tjoy_<劇場キー>_screen<NN>.(png|jpg)   （リネーム済み）
-      - <劇場コード3桁>_<NN>_*.png              （サイトの画像ファイル名。例 200_04_20240700.png）
-    """
-    from .theaters import theater_info
-    s = item.screen
-    code = theater_info(s.slug, s.theater_name).get("code")
-    want = f"tjoy_{s.theater_key}_screen{s.screen_no:02d}".lower()
-    cdn = re.compile(r"^(\d{3})_(\d{2})_")
-    for root, _, names in os.walk(folder):
-        for n in sorted(names):
-            low = n.lower()
-            if not low.endswith((".png", ".jpg", ".jpeg")):
-                continue
-            if low.startswith(want):
-                return os.path.join(root, n)
-            m = cdn.match(low)
-            if m and code and m.group(1) == code and int(m.group(2)) == s.screen_no:
-                return os.path.join(root, n)
-    return None
+    def title(self, lang: str = "ja") -> str:
+        """劇場名 + シアター番号 (タイトル帯・plainスタイルの見出し)。"""
+        return f"{self.theater_name(lang)} {self.screen_label(lang)}"
 
-
-def attach_official(items, folder):
-    """フォルダから公式画像を探して各画面に付ける。見つからなかった画面のリストを返す。"""
-    missing = []
-    for it in items:
-        p = match_official(folder, it)
-        if p:
-            with open(p, "rb") as fh:
-                it.official = fh.read()
+    def subtitle(self, lang: str = "ja") -> str:
+        if lang == "ja":
+            s = f"全席空席表示  /  {self.n_seats}席 + 車いす席 {self.n_wheelchair}席"
         else:
-            missing.append(it.label)
-    return missing
+            s = f"All seats shown as available  /  {self.n_seats} seats + {self.n_wheelchair} wheelchair"
+        if self.facility:
+            s += f"  /  {self.facility}"
+        return s
 
 
-STYLE_LABEL = {"official": "official", "plain": "plane"}
-
-
-def write_outputs(items, out_dir, formats=("png", "svg"), styles=("official", "plain"), svg_objects=(True, False),
-                  scale=2.0, show_title=True, show_legend=True, progress=None, cancelled=None):
-    """選択された画面を書き出す。戻り値は (書き出したファイル, 飛ばした説明)。
-
-    ファイル名（参考の日比谷スクリーン1と同じ形）:
-      <入力名>_official.png / <入力名>_plane.png
-      <入力名>_plane_hasObject.svg / <入力名>_plane_noObject.svg（公式風も同じ形）
-    """
-    for st in styles:
-        if st not in STYLES:
-            raise ValueError(f"未知の表示形式: {st}")
-    os.makedirs(out_dir, exist_ok=True)
-    fmts = {f.lower() for f in formats}
-    targets = [it for it in items if it.selected]
-    written, skipped = [], []
-    for i, it in enumerate(targets):
-        if cancelled and cancelled():
-            break
-        if progress:
-            progress(it.label, i, len(targets))
-        for style in styles:
-            if style == "official" and it.official is None:
-                skipped.append(f"{it.label}: 公式画像がありません（公式風は作りません）")
+def build_seatmaps(paths, log=print, fetch_missing=False) -> list:
+    """入力(.har/.txt/.zip/フォルダ)から SeatMap のリストを作る。"""
+    blobs = list(hario.iter_har_blobs(list(paths)))
+    if not blobs:
+        log("入力に .har / .txt ファイルが見つかりません。")
+    pages, order = {}, []
+    hars = []
+    for name, data in blobs:
+        try:
+            har = hario.parse_har(data)
+        except ValueError as e:
+            log(f"[skip] {name}: HARとして読めません ({e})")
+            continue
+        hars.append((name, har))
+    # 公式画像・アイコンは、どのHARに記録されていても使えるように全HARで共有する
+    shared = {}
+    for _name, har in hars:
+        shared.update(hario.find_resources(har))
+    for name, har in hars:
+        found = hario.find_seat_pages(har, name)
+        if not found:
+            log(f"[skip] {name}: 座席ページ(choice_seat)が見つかりません。座席選択画面を開いた状態で保存したHARか確認してください。")
+            continue
+        for pg in found:
+            pg.resources = shared
+            key = (pg.site_cd, pg.params.get("screen_no_map") or pg.params.get("screen_no"), pg.params.get("performance_id"))
+            if key in pages:
                 continue
-            base = os.path.join(out_dir, f"{it.stem}_{STYLE_LABEL[style]}")
-            if style == "official":
-                if fmts & {"png", "webp"}:
-                    img = render_official_png(it.screen, it.official, scale=1.0,
-                                              show_title=show_title, show_legend=show_legend)
-                    if "png" in fmts:
-                        img.save(base + ".png", "PNG")
-                        written.append(base + ".png")
-                    if "webp" in fmts:
-                        with open(base + ".webp", "wb") as fh:
-                            fh.write(to_webp_bytes(img))
-                        written.append(base + ".webp")
-                if "svg" in fmts:
-                    for obj in svg_objects:
-                        p = f"{base}_{'hasObject' if obj else 'noObject'}.svg"
-                        with open(p, "w", encoding="utf-8") as fh:
-                            fh.write(render_official_svg(it.screen, it.official, objects=obj,
-                                                         show_title=show_title, show_legend=show_legend))
-                        written.append(p)
+            pages[key] = pg
+            order.append(key)
+
+    per_source = Counter(pages[k].source for k in order)
+    maps = []
+    for key in order:
+        pg = pages[key]
+        try:
+            parsed = parse_seat_html(pg.html)
+        except SeatPageError as e:
+            log(f"[skip] {pg.source}: {e}")
+            continue
+        screen_no = parsed["screen_no"]
+        site_cd = pg.site_cd if pg.site_cd.isdigit() else (pg.site_cd or "unknown")
+        if parsed["box"].seats == []:
+            log(f"[skip] {pg.source}: 座席が見つかりません")
+            continue
+        stem = os.path.splitext(pg.source)[0]
+        if per_source[pg.source] > 1:
+            stem += f"_{screen_no}"
+        notes = list(parsed["warnings"])
+        raw = assets.map_image_bytes(site_cd, screen_no, pg.resources, fetch_missing, parsed["map_url"])
+        bg = assets.to_image(raw).convert("RGB") if raw and assets.to_image(raw) is not None else None
+        if bg is None:
+            notes.append(f"{pg.source}: この画面の公式の座席表画像がありません。公式風は作れません"
+                         "(『キャッシュを無効化』でHARを取り直すか、--fetch-missing で取得してください)。プレーンは作れます。")
+        sm = SeatMap(
+            stem=stem, site_cd=site_cd, screen_cd=str(screen_no), screen_no=str(screen_no),
+            box=parsed["box"], source=pg.source, params=pg.params, stated=parsed["stated"],
+            facility=parsed["facility"], show_date=parsed["show_date"], show_time=parsed["show_time"],
+            warnings=notes, fetch_missing=fetch_missing, bg=bg, resources=pg.resources,
+        )
+        maps.append(sm)
+    return maps
+
+
+def make_scene(sm: SeatMap, opts: Options):
+    if opts.style == "official" and sm.bg is not None:
+        return build_official(sm, opts)
+    tb = trim_box(sm.box)
+    return build_scene(tb, sm.title(opts.lang), sm.subtitle(opts.lang), opts)
+
+
+def render_image(sm: SeatMap, opts: Options, scale: float, fonts: FontSet):
+    """PNG用のPIL画像。日本語フォントが無ければ自動で英語表記にする。"""
+    o = dataclasses.replace(opts, lang="ja" if fonts.has_cjk else "en", svg_objects=False)
+    return render_png(make_scene(sm, o), scale, fonts)
+
+
+def render_svg_text(sm: SeatMap, opts: Options, scale: float) -> str:
+    return render_svg(make_scene(sm, dataclasses.replace(opts, lang="ja")), scale)
+
+
+def to_json(sm: SeatMap) -> dict:
+    return {
+        "source": sm.source,
+        "site_cd": sm.site_cd,
+        "screen_no": sm.screen_no,
+        "title": sm.title("ja"),
+        "subtitle": sm.subtitle("ja"),
+        "date": sm.show_date,
+        "time": sm.show_time,
+        "seats": sm.n_seats,
+        "wheelchair": sm.n_wheelchair,
+        "facility": sm.facility,
+        "counts": dict(sm.counts),
+        "seat_list": [
+            {"id": p.seat.seat_id, "row": p.seat.row, "number": p.seat.num, "kind": p.seat.kind,
+             "fee": p.seat.fee, "x": p.x, "y": p.y, "w": p.w, "h": p.h}
+            for p in sm.box.seats
+        ],
+    }
+
+
+def save_webp(img, path: str) -> None:
+    """PNGを変換しただけの見た目になるよう、ロスレス(劣化なし)でWebPに保存する。"""
+    img.save(path, "WEBP", lossless=True, quality=100, method=6)
+
+
+def output_name(stem: str, kind: str, opts: Options) -> str:
+    """出力ファイル名。
+    PNG/WebP: <入力名>_plane.png / <入力名>_official.png
+    SVG:      <入力名>_plane_hasObject.svg / <入力名>_plane_noObject.svg (公式風は official_*)
+    JSON:     <入力名>.json
+    """
+    if kind == "json":
+        return f"{stem}.json"
+    style = "official" if opts.style == "official" else "plane"
+    if kind == "svg":
+        return f"{stem}_{style}_{'hasObject' if opts.svg_objects else 'noObject'}.svg"
+    return f"{stem}_{style}.{kind}"
+
+
+def write_outputs(sm: SeatMap, outdir: str, formats, opts: Options, scale: float, fonts: FontSet,
+                  with_json=False, progress=None) -> list:
+    """1画面分のファイルを書き出す。progress(path, finished) を呼び、例外で中断できる(GUIの中止)。"""
+    os.makedirs(outdir, exist_ok=True)
+    if opts.style == "official" and sm.bg is None:
+        opts = dataclasses.replace(opts, style="plain")  # 公式の座席表画像が無い画面は、プレーンとして出力する
+    written = []
+    plan = [kind for kind in ("png", "webp", "svg") if kind in formats]
+    if with_json:
+        plan.append("json")
+    img = None
+    for kind in plan:
+        path = os.path.join(outdir, output_name(sm.stem, kind, opts))
+        if progress is not None:
+            progress(path, False)
+        if kind in ("png", "webp"):
+            if img is None:
+                img = render_image(sm, opts, scale, fonts)
+            if kind == "png":
+                img.save(path)
             else:
-                if fmts & {"png", "webp"}:
-                    img = render_plain_png(it.screen, scale=scale, show_title=show_title, show_legend=show_legend)
-                    if "png" in fmts:
-                        img.save(base + ".png", "PNG")
-                        written.append(base + ".png")
-                    if "webp" in fmts:
-                        with open(base + ".webp", "wb") as fh:
-                            fh.write(to_webp_bytes(img))
-                        written.append(base + ".webp")
-                if "svg" in fmts:
-                    for obj in svg_objects:
-                        p = f"{base}_{'hasObject' if obj else 'noObject'}.svg"
-                        with open(p, "w", encoding="utf-8") as fh:
-                            fh.write(render_plain_svg(it.screen, show_title=show_title,
-                                                      show_legend=show_legend, objects=obj))
-                        written.append(p)
-    if progress:
-        progress("完了", len(targets), len(targets))
-    return written, skipped
-
-
-def self_check():
-    """配布物の検査: 日本語フォントの有無と、PNG/SVG の描画が動くかを確認する。"""
-    from .fonts import find_cjk_font
-    from .render import render_plain_svg
-    from .seatpage import Seat, SeatScreen
-    seat = Seat(id="A-1", row="A", number=1, x1=0, y1=0, x2=40, y2=40, type_code="1", fee=0,
-                group=None, kind="normal")
-    scr = SeatScreen(source="self-check", slug=None, theater_name="self-check", theater_key="check",
-                     screen_no=1, screen_label="シアター1", film_title=None, show_date=None,
-                     show_time=None, seats=[seat])
-    try:
-        img = render_plain_png(scr, scale=1.0)
-        svg = render_plain_svg(scr)
-        render = "ok" if img.size[0] > 0 and "<svg" in svg else "ng"
-    except Exception as e:
-        render = f"ng ({e})"
-    return {"render": render, "cjk_font": find_cjk_font() or "none"}
+                save_webp(img, path)
+        elif kind == "svg":
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(render_svg_text(sm, opts, scale))
+        else:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(to_json(sm), f, ensure_ascii=False, indent=1)
+        written.append(path)
+        if progress is not None:
+            progress(path, True)
+    return written

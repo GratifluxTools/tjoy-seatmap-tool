@@ -8,21 +8,27 @@ import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def make(src_html, out_path):
-    with open(src_html, encoding="utf-8") as f:
-        html = f.read()
+def make_har(html: str, slug: str, screen: int, performance_id: str = "65924",
+             film_code: str = "C5011100", date: str = "2026-11-12") -> dict:
     entries = [
-        {"request": {"method": "GET", "url": "https://tjoy.jp/t-joy_emiterrace_tokorozawa/reservation/index/65924/C5011100/4/2026-11-12?type=film"},
+        {"request": {"method": "GET", "url": f"https://tjoy.jp/{slug}/reservation/index/{performance_id}/{film_code}/{screen}/{date}?type=film"},
          "response": {"status": 302, "content": {"mimeType": "text/html", "size": 0, "text": ""}}},
-        {"request": {"method": "GET", "url": "https://tjoy.jp/t-joy_emiterrace_tokorozawa/reservation/choice_seat"},
+        {"request": {"method": "GET", "url": f"https://tjoy.jp/{slug}/reservation/choice_seat"},
          "response": {"status": 200, "content": {"mimeType": "text/html; charset=UTF-8", "size": len(html.encode("utf-8")), "text": html}}},
     ]
-    har = {"log": {"version": "1.2", "creator": {"name": "tjoy-seatmap sample", "version": "1"}, "entries": entries}}
+    return {"log": {"version": "1.2", "creator": {"name": "tjoy-seatmap sample", "version": "1"}, "entries": entries}}
+
+
+def main(out_path=None):
+    src = os.path.join(HERE, "fixtures", "seat_tokorozawa_4.html")
+    with open(src, encoding="utf-8") as f:
+        html = f.read()
+    out_path = out_path or os.path.join(HERE, "sample", "sample.har")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(har, f, ensure_ascii=False)
+        json.dump(make_har(html, "t-joy_emiterrace_tokorozawa", 4), f, ensure_ascii=False)
     return out_path
 
 
 if __name__ == "__main__":
-    print(make(os.path.join(HERE, "fixtures", "seat_tokorozawa_4.html"),
-               os.path.join(HERE, "sample", "sample.har")))
+    print(main())

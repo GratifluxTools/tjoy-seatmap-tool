@@ -1,4 +1,4 @@
-"""ビルド前に tjoy_seatmap/__init__.py の版番号を書き換える(CI用)。
+"""ビルド前に toho_seatmap/__init__.py の版番号を書き換える(CI用)。
 
 使い方: python tools/set_version.py 0.1.0
   タグ名 v0.1.0 からは先頭の v を取り除いた値(0.1.0)を渡す。
@@ -9,7 +9,7 @@ import re
 import sys
 
 PATTERN = re.compile(r"^\d+\.\d+\.\d+([-.][0-9A-Za-z.]+)?$")
-INIT = os.path.join(os.path.dirname(__file__), "..", "tjoy_seatmap", "__init__.py")
+INIT = os.path.join(os.path.dirname(__file__), "..", "toho_seatmap", "__init__.py")
 
 
 def main(argv):

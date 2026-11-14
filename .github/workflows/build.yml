@@ -53,25 +53,29 @@ jobs:
           pyinstaller --noconfirm --clean --onefile --windowed
           --name tjoy-seatmap-gui --hidden-import PIL._tkinter_finder
           --icon assets/icon/icon.ico
-          run_gui.py
+          --add-data "tjoy_seatmap/assets;tjoy_seatmap/assets" run_gui.py
       - name: Build CLI (exe)
         run: >
           pyinstaller --noconfirm --onefile --console --name tjoy-seatmap-cli
           --icon assets/icon/icon.ico
-          run_cli.py
+          --add-data "tjoy_seatmap/assets;tjoy_seatmap/assets" run_cli.py
       - name: Smoke test
         shell: pwsh
         env:
           PYTHONUTF8: "1"
         run: |
           ./dist/tjoy-seatmap-cli.exe tests/sample/sample.har -o smoke
-          if (-not (Get-ChildItem smoke -Filter *.png)) { throw "PNG not generated" }
-          if (-not (Get-ChildItem smoke -Filter *.svg)) { throw "SVG not generated" }
+          # 出力名: <入力名>_official.png / <入力名>_official_noObject.svg(既定は公式風・オブジェクトなし)
+          if (-not (Test-Path smoke/sample_official.png)) { throw "PNG not generated" }
+          if (-not (Test-Path smoke/sample_official_noObject.svg)) { throw "SVG not generated" }
+          # 版番号がタグどおりに exe へ入っていること
           $ver = ./dist/tjoy-seatmap-cli.exe --version | Out-String
           if ($ver -notmatch [regex]::Escape($env:VERSION)) { throw "version mismatch: $ver" }
+          # 同梱アセット(席種アイコン・座席表画像)がexeの中から読めること
           $info = ./dist/tjoy-seatmap-cli.exe --self-check | Out-String
           Write-Host $info
-          if ($info -notmatch 'render=ok') { throw "rendering failed in exe: $info" }
+          if ($info -notmatch 'embedded_icons=7') { throw "seat icons not available" }
+          if ((Test-Path tjoy_seatmap/assets/screens) -and ($info -notmatch 'bundled_maps=[1-9]')) { throw "bundled screen assets missing from exe" }
       - uses: actions/upload-artifact@v4
         with:
           name: tjoy-seatmap-windows-x64
@@ -112,20 +116,26 @@ jobs:
         run: >
           pyinstaller --noconfirm --clean --onefile --windowed
           --name tjoy-seatmap-gui --hidden-import PIL._tkinter_finder
+          --add-data "tjoy_seatmap/assets:tjoy_seatmap/assets"
           --add-data "tjoy_seatmap/fonts:tjoy_seatmap/fonts" run_gui.py
       - name: Build CLI
         run: >
           pyinstaller --noconfirm --onefile --console
           --name tjoy-seatmap-cli
+          --add-data "tjoy_seatmap/assets:tjoy_seatmap/assets"
           --add-data "tjoy_seatmap/fonts:tjoy_seatmap/fonts" run_cli.py
       - name: Smoke test
         run: |
-          ./dist/tjoy-seatmap-cli tests/sample/sample.har -o smoke -s plain
-          ls smoke/*.png smoke/*.svg
+          ./dist/tjoy-seatmap-cli tests/sample/sample.har -o smoke
+          # 出力名: <入力名>_official.png / <入力名>_official_noObject.svg(既定は公式風・オブジェクトなし)
+          test -s smoke/sample_official.png
+          test -s smoke/sample_official_noObject.svg
           ./dist/tjoy-seatmap-cli --version | grep -F "$VERSION"
+          # 同梱アセット(席種アイコン・座席表画像)がバイナリの中から読めること
           info="$(./dist/tjoy-seatmap-cli --self-check)"
           echo "$info"
-          echo "$info" | grep -E 'render=ok'
+          echo "$info" | grep -E 'embedded_icons=7'
+          if [ -d tjoy_seatmap/assets/screens ]; then echo "$info" | grep -E 'bundled_maps=[1-9]'; fi
       - name: Package (keep executable bit)
         run: tar -C dist -czf tjoy-seatmap-linux-x64.tar.gz tjoy-seatmap-gui tjoy-seatmap-cli
       - uses: actions/upload-artifact@v4
@@ -161,3 +171,7 @@ jobs:
           ls -lh assets
       - name: Attach to Release
         run: gh release upload "$TAG" assets/* --clobber
+      - name: Summary
+        run: |
+          echo "### Release $TAG に成果物を添付しました" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"

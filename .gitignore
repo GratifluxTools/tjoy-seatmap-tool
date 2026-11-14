@@ -4,7 +4,6 @@ dist/
 *.spec
 smoke/
 seatmaps/
-out/
 *.har
 !tests/sample/sample.har
-tjoy_seatmap/fonts/
+toho_seatmap/fonts/
