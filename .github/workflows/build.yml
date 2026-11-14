@@ -53,12 +53,12 @@ jobs:
           pyinstaller --noconfirm --clean --onefile --windowed
           --name tjoy-seatmap-gui --hidden-import PIL._tkinter_finder
           --icon assets/icon/icon.ico
-          --add-data "tjoy_seatmap/assets;tjoy_seatmap/assets" run_gui.py
+          run_gui.py
       - name: Build CLI (exe)
         run: >
           pyinstaller --noconfirm --onefile --console --name tjoy-seatmap-cli
           --icon assets/icon/icon.ico
-          --add-data "tjoy_seatmap/assets;tjoy_seatmap/assets" run_cli.py
+          run_cli.py
       - name: Smoke test
         shell: pwsh
         env:
@@ -112,13 +112,11 @@ jobs:
         run: >
           pyinstaller --noconfirm --clean --onefile --windowed
           --name tjoy-seatmap-gui --hidden-import PIL._tkinter_finder
-          --add-data "tjoy_seatmap/assets:tjoy_seatmap/assets"
           --add-data "tjoy_seatmap/fonts:tjoy_seatmap/fonts" run_gui.py
       - name: Build CLI
         run: >
           pyinstaller --noconfirm --onefile --console
           --name tjoy-seatmap-cli
-          --add-data "tjoy_seatmap/assets:tjoy_seatmap/assets"
           --add-data "tjoy_seatmap/fonts:tjoy_seatmap/fonts" run_cli.py
       - name: Smoke test
         run: |
