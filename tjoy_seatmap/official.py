@@ -1,142 +1,107 @@
-"""公式サイトと同じ見た目のシーン: 公式の座席表画像(座席が描き込み済み)を背景に使う。
+"""公式風の描画: 公式の座席図(背景画像)をそのまま使い、タイトル帯と凡例だけを足す。
 
-TOHO版は背景と座席gifを重ねるが、T・ジョイの座席表画像は座席そのものが描かれているので、
-ここでは座席を重ねず、画像の上下にタイトル帯と凡例を付ける。SVG の座席オブジェクトは透明な矩形。
-背景色は画像の左上の色(公式画像の外側の色)に合わせる。
+座席図には空席状態の座席・車いす席・通路・非常口・行記号がすでに描かれているので、
+座席は描き直さない。SVGの座席オブジェクト(--svg-objects)は、座席の位置に透明な矩形を重ねる。
 """
 from __future__ import annotations
 
 from collections import Counter
 
-from . import assets
-from .layout import Box
 from .scene import Begin, End, Img, Rect, Scene, Text, layer_begin, seat_marker, text_width
-from .styles import label_of, style_of, LEGEND_ORDER
+from .styles import LEGEND_ORDER as KIND_ORDER
+from .styles import label_of, style_of
 
-HEAD_H = 46.0
-LEGEND_ROW_H = 32.0
-ICON_FOR_KIND = {
-    "normal": "icn_type1.png",
-    "pair": "icn_type2.png",
-    "trio": "icn_type6.png",
-    "premier": "icn_type4-blue.png",
-    "executive": "icn_type4-gold.png",
-    "reclining": "icn_type7.png",
-    "counter": "icn_type1.png",
-    "blocked": "icn_seat_dis.png",
-}
-
-
-def _rgb_of(img) -> tuple:
-    """背景色: 画像の左上の色(公式画像の外側)。"""
-    r, g, b = img.convert("RGB").getpixel((0, 0))
-    return r, g, b
-
-
-def _hex(rgb) -> str:
-    return "#%02X%02X%02X" % tuple(rgb[:3])
-
-
-def _swatch(kind: str, resources: dict | None):
-    """凡例の見本(席種アイコン)。カウンターは通常席アイコンに茶色の台を付けて区別する。"""
-    from PIL import ImageDraw
-
-    im = assets.seat_icon(ICON_FOR_KIND.get(kind, "icn_type1.png"), resources)
-    if im is None:
-        return None
-    im = im.copy()
-    if kind == "counter":
-        d = ImageDraw.Draw(im)
-        d.rectangle([0, im.height - 3, im.width - 1, im.height - 1], fill=(140, 100, 60, 255))
-    return im
+HEAD_H = 92.0  # タイトル帯の高さ(劇場名・設備・席数を大きめの文字で入れる)
+SW = 17.0  # 凡例の見本の大きさ
+LEG_SIZE = 13.0  # 凡例の文字の大きさ(画像の見本に合わせて大きめ)
+LEG_ROW = 40.0  # 凡例の行の高さ
+WHITE = "#FFFFFF"
+SOFT = "#D9DADC"
+BAND = "#3A4652"
+PAGE = "#FFFFFF"
 
 
 def build_official(sm, opts) -> Scene:
     lang = opts.lang
-    box: Box = sm.box
-    bg = sm.bg.convert("RGB")  # 公式の座席表画像
+    bg = sm.bg  # PIL RGBA
     bw, bh = bg.size
-    color = _hex(_rgb_of(bg))
-    light = sum(_rgb_of(bg)) / 3 >= 128
-    fg = "#222222" if light else "#FFFFFF"
-    sub = "#555555" if light else "#D9DADC"
     W = float(bw)
-    k = max(1.0, bw / 600.0)  # 画像が大きいほど、見出し・凡例も比例して大きくする(600px基準)
-    head_h = HEAD_H * k if opts.show_title else 0.0
+    obj = opts.svg_objects
 
-    # ---- 座席の選択用オブジェクト (SVG のみ。透明な矩形) ----
-    images = {"__bg__": bg.convert("RGBA")}
-    body = []
-    body.append(Img(0, head_h, bw, bh, "__bg__"))
-    if opts.svg_objects:
-        body = [layer_begin("background", "公式座席表")] + body + [End()]
-        used = set()
-        by_row = {}
-        for p in box.seats:
-            by_row.setdefault(p.seat.row, []).append(p)
-        seats = [layer_begin("seats", "座席")]
-        for row, lst in by_row.items():
-            seats.append(Begin(f"row-{row}", {"data-row": row}, f"{row}列"))
-            for p in lst:
-                seats.append(seat_marker(p, used, False, lang))
-                seats.append(Rect(p.x, p.y + head_h, p.w, p.h, fill="#000000", opacity=0))
-                seats.append(End())
-            seats.append(End())
-        seats.append(End())
-        body += seats
+    counts = Counter()
+    for p in sm.box.seats:
+        counts[style_of(p.seat.kind)[0]] += 1
+    groups = sorted(counts, key=lambda g: (KIND_ORDER.index(g) if g in KIND_ORDER else 50, g))
 
-    # ---- タイトル帯 (劇場名 + スクリーン番号 / 副題: 席数 + 設備注記) ----
-    head = []
-    if opts.show_title:
-        head.append(Text(W / 2, 17 * k, sm.title(lang), 15 * k, "middle", fg, True))
-        head.append(Text(W / 2, 34 * k, sm.subtitle(lang), 8.5 * k, "middle", sub))
-
-    # ---- 凡例 (席種ごとの見本と席数。料金は表示しない) ----
-    counts = Counter(p.seat.kind for p in box.seats)
-    groups = [g for g in LEGEND_ORDER if counts.get(g)] + sorted(g for g in counts if g not in LEGEND_ORDER)
+    # 凡例を折り返す
     entries = []
     for g in groups:
-        key = f"legend:{g}"
-        sw = _swatch(g, sm.resources)
-        if sw is not None:
-            images[key] = sw
-        sw_w = (sw.width * k) if sw is not None else 15 * k
-        sw_h = min(22 * k, sw.height * k) if sw is not None else 22 * k
+        _grp, fill, stroke, _t = style_of(g)
         txt = f"{label_of(g, lang)} {counts[g]}"
-        entries.append((key if sw is not None else None, sw_w, sw_h, txt,
-                        sw_w + 6 * k + text_width(txt, 8.5 * k) + 16 * k))
-    leg_rows, cur, cw = [], [], 0.0
+        entries.append((fill, stroke, txt, SW + 8 + text_width(txt, LEG_SIZE) + 28))
+    if sm.n_wheelchair:
+        wl = "車いす席" if lang == "ja" else "Wheelchair"
+        txt = f"{wl} {sm.n_wheelchair}"
+        entries.append(("#E3E5E8", "#9AA3AD", txt, SW + 8 + text_width(txt, LEG_SIZE) + 28))
+    rows, cur, cw = [], [], 0.0
     for e in entries:
-        if cur and cw + e[4] > W - 20 * k:
-            leg_rows.append(cur)
+        if cur and cw + e[3] > W - 20:
+            rows.append(cur)
             cur, cw = [], 0.0
         cur.append(e)
-        cw += e[4]
+        cw += e[3]
     if cur:
-        leg_rows.append(cur)
-    row_h = LEGEND_ROW_H * k
-    leg_h = 10 * k + row_h * len(leg_rows) if (opts.show_legend and leg_rows) else 0.0
-
+        rows.append(cur)
+    leg_h = 14 + LEG_ROW * len(rows) if (opts.show_legend and rows) else 0.0
+    head_h = HEAD_H if opts.show_title else 0.0
     total_h = head_h + bh + leg_h
-    out = [Rect(0, 0, W, total_h, fill=color)]
-    if opts.svg_objects and head:
-        out += [layer_begin("header", "タイトル")] + head + [End()]
-    else:
-        out += head
-    out += body
-    y = head_h + bh + 6 * k
-    if opts.svg_objects and leg_rows and opts.show_legend:
-        out.append(layer_begin("legend", "凡例"))
-    if opts.show_legend:
-        for row in leg_rows:
-            total = sum(e[4] for e in row) - 16 * k
-            x = (W - total) / 2
-            for key, sw_w, sw_h, txt, wd in row:
-                if key:
-                    out.append(Img(x, y + (22 * k - sw_h) / 2 + 3 * k, sw_w, sw_h, key))
-                out.append(Text(x + sw_w + 6 * k, y + 14 * k, txt, 8.5 * k, "start", fg))
-                x += wd
-            y += row_h
-    if opts.svg_objects and leg_rows and opts.show_legend:
+
+    out = []
+    if obj:
+        out.append(layer_begin("header", "タイトル"))
+    out.append(Rect(0, 0, W, total_h, fill=PAGE))
+    if opts.show_title:
+        out.append(Rect(0, 0, W, head_h, fill=BAND))
+        out.append(Text(W / 2, 38, sm.title(lang), 30, "middle", WHITE, True))
+        out.append(Text(W / 2, 74, sm.subtitle(lang), 18, "middle", SOFT))
+    if obj:
         out.append(End())
-    return Scene(W, total_h, out, bg=color, images=images, ss=1, inline_images=opts.svg_objects)
+
+    if obj:
+        out.append(layer_begin("background", "座席図"))
+    out.append(Img(0, head_h, bw, bh, "__bg__"))
+    if obj:
+        out.append(End())
+
+    if obj:
+        out.append(layer_begin("seats", "座席"))
+        used = set()
+        by_row = {}
+        for p in sm.box.seats:
+            by_row.setdefault(p.seat.row, []).append(p)
+        for row, ps in by_row.items():
+            out.append(Begin(f"row-{row}", {"data-row": row}, f"{row}列"))
+            for p in ps:
+                out.append(seat_marker(p, used, False, lang))
+                out.append(Rect(p.x, p.y + head_h, p.w, p.h, fill=None, stroke=None))
+                out.append(End())
+            out.append(End())
+        out.append(End())
+
+    if leg_h and opts.show_legend:
+        if obj:
+            out.append(layer_begin("legend", "凡例"))
+        y = head_h + bh + 6
+        for row in rows:
+            total = sum(e[3] for e in row) - 28
+            x = (W - total) / 2
+            for fill, stroke, txt, wd in row:
+                out.append(Rect(x, y + (LEG_ROW - SW) / 2, SW, SW, r=4, fill=fill, stroke=stroke, sw=1.2))
+                out.append(Text(x + SW + 8, y + LEG_ROW / 2, txt, LEG_SIZE, "start", "#33404D"))
+                x += wd
+            y += LEG_ROW
+        if obj:
+            out.append(End())
+
+    images = {"__bg__": bg}
+    return Scene(W, total_h, out, bg=PAGE, images=images, ss=1, inline_images=obj)

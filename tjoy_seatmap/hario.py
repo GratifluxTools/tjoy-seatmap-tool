@@ -1,11 +1,4 @@
-"""HARファイルの読み込みと、T・ジョイの座席ページ/予約情報/画像の抽出。
-
-取得するもの:
-  - 座席ページ: https://tjoy.jp/<劇場>/reservation/choice_seat (HTML。座席は <area> の画像マップ)
-  - 予約情報:   直前の 302 リダイレクト .../reservation/index/<上映ID>/<作品コード>/<スクリーン>/<日付>?type=..
-  - 公式の座席表画像: 座席ページの img.js-map (cdn.tjoy.jp/images/_up/theater/<劇場コード>_<スクリーン>_<日付>.png)
-  - 席種アイコン: /img/front/images/seat/icn_*.png (凡例に使う)
-"""
+"""HARファイルの読み込みと、座席ページ/背景画像/劇場ページの抽出。"""
 from __future__ import annotations
 
 import base64
@@ -17,30 +10,27 @@ import zipfile
 from dataclasses import dataclass, field
 from typing import Iterator
 
-CHOICE_SEAT_RE = re.compile(r"https?://tjoy\.jp/([^/]+)/reservation/choice_seat")
-RESERVE_RE = re.compile(
-    r"https?://tjoy\.jp/([^/]+)/reservation/index/(\d+)/([A-Za-z0-9]+)/(\d+)/(\d{4}-\d{2}-\d{2})\?type=(\w+)"
-)
-MAP_URL_RE = re.compile(r"/images/_up/theater/(\d{3})_(\d{2})_[^/?#]*\.(?:png|jpe?g|gif)$")
-ICON_URL_RE = re.compile(r"/img/front/images/seat/(icn_[\w.-]+\.png)$")
-SEAT_PAGE_MARK = "js-map-seat"  # 座席ページ(画像マップ)の目印
+SEAT_URL_RE = re.compile(r"tjoy\.jp/(?:[^/?#]+)/reservation/choice_seat")
+BG_URL_RE = re.compile(r"/images/_up/theater/(\d+)_(\d{2})_\d+\.png")
+MODAL_MAP_RE = re.compile(r"/img/front/images/theater/(\d+)/map_(\d{2})\.png")
+THEATER_PAGE_RE = re.compile(r"^https?://tjoy\.jp/([^/?#]+)/?$")
 
 
 @dataclass
 class SeatPage:
     html: str
-    params: dict
     url: str
     source: str  # 入力ファイル名(表示用)
-    resources: dict = field(default_factory=dict)  # 'map:200:04' / 'icon:icn_type1.png' -> bytes
+    resources: dict = field(default_factory=dict)  # (劇場コード, 画面番号) -> 背景画像のバイト列
 
     @property
-    def site_cd(self) -> str:
-        return self.params.get("site_cd") or ""
+    def slug(self) -> str:
+        m = re.search(r"tjoy\.jp/([^/?#]+)/reservation/", self.url)
+        return m.group(1) if m else ""
 
 
 def iter_har_blobs(paths) -> Iterator[tuple]:
-    """.har / .txt(HARの拡張子違い) / .zip(中の.har) / フォルダ(再帰) から (表示名, bytes) を列挙する。"""
+    """.har / .zip(中の.har) / ディレクトリ(再帰)から (表示名, bytes) を列挙する。"""
     for p in paths:
         if os.path.isdir(p):
             for root, _dirs, files in os.walk(p):
@@ -49,8 +39,10 @@ def iter_har_blobs(paths) -> Iterator[tuple]:
         elif p.lower().endswith(".zip"):
             with zipfile.ZipFile(p) as zf:
                 for info in sorted(zf.infolist(), key=lambda i: i.filename):
+                    if info.is_dir() or not info.filename.lower().endswith((".har", ".txt")):
+                        continue
                     base = os.path.basename(info.filename)
-                    if info.is_dir() or not base.lower().endswith((".har", ".txt")) or base.startswith("._"):
+                    if base.startswith("._"):  # macOSのメタデータ
                         continue
                     yield base, zf.read(info)
         elif p.lower().endswith((".har", ".txt")):
@@ -72,77 +64,48 @@ def _charset_of(mime: str) -> str:
         return "utf-8"
 
 
-def entry_bytes(entry: dict) -> bytes:
-    content = entry.get("response", {}).get("content", {}) or {}
-    text = content.get("text") or ""
-    if content.get("encoding") == "base64":
-        return base64.b64decode(text) if text else b""
-    return text.encode(_charset_of(content.get("mimeType", "")), errors="replace")
-
-
 def entry_text(entry: dict) -> str:
     content = entry.get("response", {}).get("content", {}) or {}
-    return entry_bytes(entry).decode(_charset_of(content.get("mimeType", "")), errors="replace")
+    text = content.get("text") or ""
+    if content.get("encoding") == "base64" and text:
+        raw = base64.b64decode(text)
+        return raw.decode(_charset_of(content.get("mimeType", "")), errors="replace")
+    return text
 
 
-def find_resources(har: dict) -> dict:
-    """公式の座席表画像(map)と席種アイコン(icon)を取り出す。本体が記録されていないものは無視する。"""
+def entry_bytes(entry: dict):
+    """画像などのバイナリ本体。HARに本体が無い(Fiddlerの上限で省略)場合は None。"""
+    content = entry.get("response", {}).get("content", {}) or {}
+    text = content.get("text")
+    if not text:
+        return None
+    if content.get("encoding") == "base64":
+        return base64.b64decode(text)
+    return text.encode("utf-8")
+
+
+def find_background_resources(har: dict) -> dict:
+    """HAR内の座席表背景画像 (劇場コード, 画面番号) -> bytes。本体が無いものは含めない。"""
     out = {}
     for e in har.get("log", {}).get("entries", []):
         url = e.get("request", {}).get("url", "").split("?")[0]
-        if e.get("response", {}).get("status") != 200:
+        m = BG_URL_RE.search(url) or MODAL_MAP_RE.search(url)
+        if not m or e.get("response", {}).get("status") != 200:
             continue
-        m = MAP_URL_RE.search(url)
-        if m:
-            data = entry_bytes(e)
-            if data:
-                out[f"map:{m.group(1)}:{m.group(2)}"] = data
-            continue
-        m = ICON_URL_RE.search(url)
-        if m:
-            data = entry_bytes(e)
-            if data:
-                out[f"icon:{m.group(1)}"] = data
+        data = entry_bytes(e)
+        if data:
+            out[(m.group(1), str(int(m.group(2))))] = data
     return out
 
 
-def _params_from_reserve(m) -> dict:
-    return {
-        "slug": m.group(1), "performance_id": m.group(2), "film_code": m.group(3),
-        "screen_no": int(m.group(4)), "date": m.group(5), "type": m.group(6),
-    }
-
-
 def find_seat_pages(har: dict, source: str = "") -> list:
-    """座席ページ(choice_seat)を、直前の予約リダイレクトの情報と組にして返す。"""
     pages = []
-    pending = None
-    resources = None
     for e in har.get("log", {}).get("entries", []):
         url = e.get("request", {}).get("url", "")
-        m = RESERVE_RE.search(url)
-        if m:
-            pending = _params_from_reserve(m)
-            continue
-        m = CHOICE_SEAT_RE.search(url)
-        if not m:
+        if not SEAT_URL_RE.search(url):
             continue
         html = entry_text(e)
-        if SEAT_PAGE_MARK not in html:
+        if "<area" not in html or "seat-select" not in html:
             continue
-        if resources is None:
-            resources = find_resources(har)
-        params = dict(pending or {})
-        params.setdefault("slug", m.group(1))
-        # 座席表画像のURLから劇場コードを取る(例: 200_04_xxx.png -> 200)
-        mm = re.search(r'src="([^"]*/images/_up/theater/\d{3}_\d{2}_[^"]*)"', html)
-        map_url = mm.group(1) if mm else None
-        if map_url:
-            code = MAP_URL_RE.search(map_url.split("?")[0])
-            if code:
-                params["site_cd"] = code.group(1)
-                params["screen_no_map"] = int(code.group(2))
-        params.setdefault("site_cd", params["slug"])
-        pages.append(SeatPage(html=html, params=params, url=url, source=source, resources=resources))
-        pending = None
+        pages.append(SeatPage(html=html, url=url, source=source))
     return pages

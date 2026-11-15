@@ -68,8 +68,6 @@ def render_svg(scene: Scene, scale: float = 2.0) -> str:
             if it.r:
                 a += f' rx="{_f(it.r)}"'
             a += f' fill="{it.fill or "none"}"'
-            if it.opacity is not None:
-                a += f' fill-opacity="{_f(it.opacity)}"'
             if it.stroke:
                 a += f' stroke="{it.stroke}" stroke-width="{_f(it.sw)}"'
             out.append(a + "/>")

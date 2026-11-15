@@ -1,34 +1,55 @@
-"""tests/fixtures の座席ページから、テスト用の小さなHAR(tests/sample/sample.har)を作る。
+"""テスト用の合成HARを作る(実際のT・ジョイのページは含まない)。
 
-使い方: python tests/make_sample_har.py
+座席ページ(choice_seat)の <map> <area> 構造と、背景画像・劇場トップのスクリーン一覧を最小限に再現する。
 """
 import json
-import os
-
-HERE = os.path.dirname(os.path.abspath(__file__))
+import sys
 
 
-def make_har(html: str, slug: str, screen: int, performance_id: str = "65924",
-             film_code: str = "C5011100", date: str = "2026-11-12") -> dict:
-    entries = [
-        {"request": {"method": "GET", "url": f"https://tjoy.jp/{slug}/reservation/index/{performance_id}/{film_code}/{screen}/{date}?type=film"},
-         "response": {"status": 302, "content": {"mimeType": "text/html", "size": 0, "text": ""}}},
-        {"request": {"method": "GET", "url": f"https://tjoy.jp/{slug}/reservation/choice_seat"},
-         "response": {"status": 200, "content": {"mimeType": "text/html; charset=UTF-8", "size": len(html.encode("utf-8")), "text": html}}},
-    ]
-    return {"log": {"version": "1.2", "creator": {"name": "tjoy-seatmap sample", "version": "1"}, "entries": entries}}
+def _area(sid, typ, x, y):
+    return (f'<area id="{sid}" type-seat="{typ}" seat-group="null" add-change="0" '
+            f'data-coords="{x},{y},{x + 40},{y + 40}" coords="{x},{y},{x + 40},{y + 40}" shape="rect" class="seat-select">')
 
 
-def main(out_path=None):
-    src = os.path.join(HERE, "fixtures", "seat_tokorozawa_4.html")
-    with open(src, encoding="utf-8") as f:
-        html = f.read()
-    out_path = out_path or os.path.join(HERE, "sample", "sample.har")
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(make_har(html, "t-joy_emiterrace_tokorozawa", 4), f, ensure_ascii=False)
-    return out_path
+def seat_html():
+    areas = [_area("A-1", 1, 20, 20), _area("A-2", 1, 70, 20), _area("B-1", 5, 20, 70), _area("G-1", 2, 20, 120),
+             _area("A-12", 11, 300, 20)]
+    return ('<html><body><div class="seat"><img src="https://cdn.tjoy.jp/images/_up/theater/200_01_20240802.png" '
+            'usemap="#image-map" class="map js-map"><map name="image-map">' + "\n".join(areas) + "</map></div>"
+            '<div class="modal popupscreen" id="screen01"><h4 class="modal-new__title">シアター1</h4>'
+            '<p>5席 +（車椅子1席）</p></div></body></html>')
+
+
+def theater_html():
+    return ('<html><head><title>T・ジョイ エミテラス所沢</title></head><body>'
+            '<a data-toggle="modal" data-target="#screen01">シアター１</a></body></html>')
+
+
+def entry(url, text, mime="text/html; charset=utf-8", status=200, method="GET"):
+    return {"request": {"method": method, "url": url, "queryString": []},
+            "response": {"status": status, "content": {"mimeType": mime, "size": len(text), "text": text}}}
+
+
+def make(path_seat="sample_tjoy_200_1.har", path_theater="sample_tjoy_200_theater.har"):
+    seat = {"log": {"version": "1.2", "entries": [
+        entry("https://tjoy.jp/t-joy_emiterrace_tokorozawa/reservation/choice_seat", seat_html()),
+        # 背景画像は本体が省略された状態(Fiddlerの上限)を再現する
+        entry("https://cdn.tjoy.jp/images/_up/theater/200_01_20240802.png", "", mime="image/png"),
+    ]}}
+    theater = {"log": {"version": "1.2", "entries": [
+        entry("https://tjoy.jp/t-joy_emiterrace_tokorozawa", theater_html()),
+    ]}}
+    with open(path_seat, "w", encoding="utf-8") as f:
+        json.dump(seat, f, ensure_ascii=False)
+    with open(path_theater, "w", encoding="utf-8") as f:
+        json.dump(theater, f, ensure_ascii=False)
 
 
 if __name__ == "__main__":
-    print(main())
+    import os
+
+    if len(sys.argv) >= 3:
+        make(*sys.argv[1:3])
+    else:
+        os.makedirs("tests/sample", exist_ok=True)
+        make("tests/sample/sample_tjoy_200_1.har", "tests/sample/sample_tjoy_200_theater.har")

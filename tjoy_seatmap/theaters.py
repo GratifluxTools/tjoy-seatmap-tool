@@ -1,7 +1,6 @@
-"""劇場コード(site_cd) -> 劇場名。組み込み + 利用者が登録した名前(設定ファイル)。
+"""劇場コード -> 劇場名。組み込み + 利用者が登録した名前(設定ファイル)。
 
-site_cd は座席表画像の劇場コード(新宿=140、所沢=200)。コードが分からない劇場は、
-URLのスラッグ(umeda / kyoto)を使う。
+劇場コードは座席表の背景画像のファイル名(例: cdn.tjoy.jp/images/_up/theater/200_01_...png の 200)由来。
 """
 from __future__ import annotations
 
@@ -11,14 +10,21 @@ import os
 BUILTIN_JA = {
     "140": "新宿バルト9",
     "200": "T・ジョイ エミテラス所沢",
-    "umeda": "T・ジョイ梅田",
-    "kyoto": "T・ジョイ京都",
+    "320": "T・ジョイ梅田",
+    "360": "T・ジョイ京都",
 }
 BUILTIN_EN = {
-    "140": "Shinjuku Balt 9",
-    "200": "T-JOY Emiterrace Tokorozawa",
-    "umeda": "T-JOY Umeda",
-    "kyoto": "T-JOY Kyoto",
+    "140": "Shinjuku Baruto 9",
+    "200": "T-Joy Emiterrace Tokorozawa",
+    "320": "T-Joy Umeda",
+    "360": "T-Joy Kyoto",
+}
+# 劇場トップのURLスラッグ -> 劇場コード
+CODE_OF_SLUG = {
+    "shinjuku_wald9": "140",
+    "t-joy_emiterrace_tokorozawa": "200",
+    "t-joy_umeda": "320",
+    "t-joy_kyoto": "360",
 }
 
 _USER: dict | None = None
@@ -33,7 +39,7 @@ def config_path() -> str:
 
 
 def user_names() -> dict:
-    """利用者が登録した {site_cd: 劇場名}。"""
+    """利用者が登録した {劇場コード: 劇場名}。"""
     global _USER
     if _USER is None:
         try:
@@ -45,13 +51,13 @@ def user_names() -> dict:
     return _USER
 
 
-def save_user_name(site_cd: str, name: str) -> bool:
+def save_user_name(code: str, name: str) -> bool:
     """劇場名を設定ファイルに記憶する(空文字なら削除)。成功したら True。"""
     d = dict(user_names())
     if name.strip():
-        d[str(site_cd)] = name.strip()
+        d[str(code)] = name.strip()
     else:
-        d.pop(str(site_cd), None)
+        d.pop(str(code), None)
     try:
         os.makedirs(os.path.dirname(config_path()), exist_ok=True)
         with open(config_path(), "w", encoding="utf-8") as f:
@@ -63,17 +69,19 @@ def save_user_name(site_cd: str, name: str) -> bool:
     return True
 
 
-def is_known(site_cd: str) -> bool:
-    return site_cd in BUILTIN_JA or site_cd in user_names()
+def is_known(code: str) -> bool:
+    return code in BUILTIN_JA or code in user_names()
 
 
-def name_for(site_cd: str, lang: str = "ja", override: str | None = None, schedule_name: str | None = None) -> str:
-    """優先順位: 手動指定 > 利用者登録 > 組み込み > 「T・ジョイ (site コード)」。(schedule_name は互換のため受け取るだけ)"""
+def name_for(code: str, lang: str = "ja", override: str | None = None, schedule_name: str | None = None) -> str:
+    """優先順位: 手動指定 > 利用者登録 > 組み込み > スケジュールHAR由来 > 「T・ジョイ (コード)」。"""
     if override and override.strip():
         return override.strip()
-    if site_cd in user_names():
-        return user_names()[site_cd]
+    if code in user_names():
+        return user_names()[code]
     table = BUILTIN_JA if lang == "ja" else BUILTIN_EN
-    if site_cd in table:
-        return table[site_cd]
-    return f"T・ジョイ (site {site_cd})" if lang == "ja" else f"T-JOY (site {site_cd})"
+    if code in table:
+        return table[code]
+    if lang == "ja" and schedule_name and schedule_name.strip():
+        return schedule_name.strip()
+    return f"T・ジョイ (code {code})" if lang != "ja" else f"T・ジョイ (コード {code})"

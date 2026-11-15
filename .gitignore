@@ -6,4 +6,4 @@ smoke/
 seatmaps/
 *.har
 !tests/sample/sample.har
-toho_seatmap/fonts/
+tjoy_seatmap/fonts/

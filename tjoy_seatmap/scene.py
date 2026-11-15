@@ -6,10 +6,10 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
 from .layout import Box
-from .styles import LEGEND_ORDER, label_of, style_of
+from .styles import label_of, style_of
 
-MARGIN = 20.0
-LABEL_W = 13.0
+MARGIN = 22.0
+LABEL_W = 18.0
 
 
 @dataclass
@@ -22,7 +22,6 @@ class Rect:
     fill: str | None = None
     stroke: str | None = None
     sw: float = 1
-    opacity: float | None = None  # 0 のとき透明(選択用オブジェクト。PNGには描かない)
 
 
 @dataclass
@@ -239,7 +238,7 @@ def build_scene(box: Box, title: str, subtitle: str, opts: Options, footer: str 
         blocked = p.seat.blocked and opts.blocked_mode == "mark"
         group = style_of(p.seat.kind, blocked)[0]
         counts[group] += 1
-    order = LEGEND_ORDER + ["blocked"]
+    order = ["normal", "prm", "wheelchair", "blocked"]
     groups = sorted(counts, key=lambda g: (order.index(g) if g in order else 50, g))
 
     legend_items = []
@@ -247,10 +246,10 @@ def build_scene(box: Box, title: str, subtitle: str, opts: Options, footer: str 
         kind = {"mx4d": "mx4d_center"}.get(g, g)
         _grp, fill, stroke, _t = style_of(kind, blocked=(g == "blocked"))
         txt = f"{label_of(g, lang)} {counts[g]}"
-        legend_items.append((g, fill, stroke, txt, 12 + 5 + text_width(txt, 8) + 14))
+        legend_items.append((g, fill, stroke, txt, 18 + 8 + text_width(txt, 12) + 26))
 
     seat_area_w = box.w + LABEL_W * 2
-    header_w = max(text_width(title, 15), text_width(subtitle, 8.5)) if title or subtitle else 0
+    header_w = max(text_width(title, 26), text_width(subtitle, 14)) if title or subtitle else 0
     canvas_inner = max(seat_area_w, header_w, 260)
     # 凡例の折り返し
     rows, cur, cur_w = [], [], 0.0
@@ -279,11 +278,11 @@ def build_scene(box: Box, title: str, subtitle: str, opts: Options, footer: str 
     # ---- ヘッダ ----------------------------------------------------------
     L_begin("header", "タイトル")
     if title:
-        items.append(Text(W / 2, y + 8, title, 15, "middle", "#1E2A36", True))
-        y += 20
+        items.append(Text(W / 2, y + 14, title, 26, "middle", "#1E2A36", True))
+        y += 32
     if subtitle:
-        items.append(Text(W / 2, y + 5, subtitle, 8.5, "middle", "#5B6670"))
-        y += 14
+        items.append(Text(W / 2, y + 8, subtitle, 14, "middle", "#5B6670"))
+        y += 22
     y += 6
     L_end()
 
@@ -292,9 +291,9 @@ def build_scene(box: Box, title: str, subtitle: str, opts: Options, footer: str 
     ox = (W - box.w) / 2
     sw_ = max(box.w * 0.9, 120)
     sx = (W - sw_) / 2
-    items.append(Rect(sx, y, sw_, 12, r=4, fill="#3A4652"))
-    items.append(Text(W / 2, y + 6.3, "SCREEN" if lang != "ja" else "SCREEN  スクリーン", 7.5, "middle", "#FFFFFF", True))
-    y += 12 + 12
+    items.append(Rect(sx, y, sw_, 16, r=6, fill="#3A4652"))
+    items.append(Text(W / 2, y + 8.2, "SCREEN" if lang != "ja" else "SCREEN  スクリーン", 10.5, "middle", "#FFFFFF", True))
+    y += 16 + 14
     L_end()
 
     # ---- 座席 ------------------------------------------------------------
@@ -316,7 +315,7 @@ def build_scene(box: Box, title: str, subtitle: str, opts: Options, footer: str 
             items.append(Line(cx - d, cy - d, cx + d, cy + d, stroke, 0.9))
             items.append(Line(cx - d, cy + d, cx + d, cy - d, stroke, 0.9))
         elif opts.show_numbers:
-            size = min(rw * 0.62, rh * 0.5, 9.5)
+            size = min(rw * 0.66, rh * 0.5, 12.0)
             items.append(Text(cx, cy + 0.2, str(s.num), size, "middle", tcol))
 
     L_begin("seats", "座席")
@@ -337,21 +336,21 @@ def build_scene(box: Box, title: str, subtitle: str, opts: Options, footer: str 
     # 行ラベル(各行の左右端に添える)
     L_begin("row-labels", "行記号")
     for row, minx, maxx, cyl in _lines(placed):
-        items.append(Text(ox + minx - 3, oy + cyl, row, 8, "end", "#6B7785", True))
-        items.append(Text(ox + maxx + 3, oy + cyl, row, 8, "start", "#6B7785", True))
+        items.append(Text(ox + minx - 4, oy + cyl, row, 11, "end", "#6B7785", True))
+        items.append(Text(ox + maxx + 4, oy + cyl, row, 11, "start", "#6B7785", True))
     L_end()
 
     y = oy + box.h + 14
     # ---- 凡例 ------------------------------------------------------------
     L_begin("legend", "凡例")
     for rowitems in rows:
-        total = sum(i[4] for i in rowitems) - 14
+        total = sum(i[4] for i in rowitems) - 26
         x = (W - total) / 2
         for _g, fill, stroke, txt, wd in rowitems:
-            items.append(Rect(x, y, 12, 12, r=3, fill=fill, stroke=stroke, sw=0.7))
-            items.append(Text(x + 17, y + 6.3, txt, 8, "start", "#33404D"))
+            items.append(Rect(x, y, 18, 18, r=5, fill=fill, stroke=stroke, sw=1.0))
+            items.append(Text(x + 26, y + 9.2, txt, 12, "start", "#33404D"))
             x += wd
-        y += 17
+        y += 28
     if footer:
         y += 2
         items.append(Text(W / 2, y + 4, footer, 6.5, "middle", "#8A949E"))

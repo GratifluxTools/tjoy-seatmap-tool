@@ -65,6 +65,7 @@ class App(tk.Tk):
         except Exception:
             pass
         self.inputs: list = []
+        self.schedules: list = []
         self.maps: list = []
         self.fonts = make_fontset()
         self._photo = None
@@ -86,6 +87,7 @@ class App(tk.Tk):
         ttk.Button(row, text="ファイル追加…", command=self.add_files).pack(side="left")
         ttk.Button(row, text="フォルダ追加…", command=self.add_dir).pack(side="left", padx=4)
         ttk.Button(row, text="クリア", command=self.clear).pack(side="left")
+        ttk.Label(left, text="※スケジュールのHARも一緒に入れると画面名が正式名になります", foreground="#666").pack(anchor="w")
 
         opt = ttk.LabelFrame(left, text="オプション", padding=6)
         opt.pack(fill="x", pady=6)
@@ -111,11 +113,11 @@ class App(tk.Tk):
         ttk.Label(self.f_svgopt, text="レイヤー>行>座席のグループ。Illustrator/Inkscape等で個別に選択できます", foreground="#666").pack(anchor="w")
         self._svgopt_anchor = r
         ttk.Label(opt, text="スタイル").pack(anchor="w")
-        for val, txt in (("official", "公式サイト風(公式の座席表画像)"), ("plain", "プレーン(明るい配色)")):
+        for val, txt in (("official", "公式の座席図(そのまま)+凡例"), ("plain", "プレーン(明るい配色)")):
             ttk.Radiobutton(opt, text=txt, value=val, variable=self.v_style, command=self.refresh_preview).pack(anchor="w")
         ttk.Checkbutton(opt, text="タイトル帯", variable=self.v_title, command=self.refresh_preview).pack(anchor="w")
         ttk.Checkbutton(opt, text="凡例", variable=self.v_legend, command=self.refresh_preview).pack(anchor="w")
-        ttk.Checkbutton(opt, text="不足する座席表画像をT・ジョイのサイトから取得(通信あり)", variable=self.v_fetch).pack(anchor="w")
+        ttk.Checkbutton(opt, text="不足する背景画像をT・ジョイのサイトから取得(通信あり)", variable=self.v_fetch).pack(anchor="w")
         ttk.Checkbutton(opt, text="席番号を表示(プレーンのみ)", variable=self.v_num, command=self.refresh_preview).pack(anchor="w")
         r = ttk.Frame(opt); r.pack(anchor="w", pady=2)
         ttk.Label(r, text="拡大率").pack(side="left")
@@ -237,10 +239,10 @@ class App(tk.Tk):
         missing = [sm for sm in maps if sm.bg is None]
         if missing and not self.v_fetch.get():
             if messagebox.askyesno(
-                "公式の座席表画像が見つかりません",
-                f"{len(missing)} 画面で、公式の座席表画像がHARにも同梱分にもありません。\n"
-                "公式風は作れないため、プレーンのみ作成できます。\n\n"
-                "T・ジョイサイトから座席表画像を取得して、公式風も作れるようにしますか?\n"
+                "背景画像が見つかりません",
+                f"{len(missing)} 画面で、背景画像(通路・出入口・行記号)がHARにも同梱分にもありません。\n"
+                "今は座席の位置から描画しています(背景なし)。\n\n"
+                "T・ジョイのサイトから背景画像を取得して、公式と同じ見た目にしますか?\n"
                 "(この画面だけ通信します。取得したものは保存され、次回以降は通信しません)",
             ):
                 self.v_fetch.set(True)
@@ -249,7 +251,7 @@ class App(tk.Tk):
     def _label(self, sm) -> str:
         mark = "" if sm.theater_known else "  ※劇場名未登録"
         if sm.bg is None:
-            mark += "  [公式画像なし]"
+            mark += "  [背景なし]"
         return f"{sm.title('ja')}  ({sm.n_seats}+{sm.n_wheelchair}){mark}"
 
     def _refill_list(self, keep=None):

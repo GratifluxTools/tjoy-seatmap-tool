@@ -44,8 +44,6 @@ def render_png(scene: Scene, scale: float = 2.0, fonts: FontSet | None = None) -
     d = ImageDraw.Draw(img)
     for it in scene.items:
         if isinstance(it, Rect):
-            if it.opacity == 0:
-                continue  # 透明な選択用オブジェクトは描かない
             box = [it.x * k, it.y * k, (it.x + it.w) * k - 1, (it.y + it.h) * k - 1]
             kw = dict(fill=it.fill)
             if it.stroke:

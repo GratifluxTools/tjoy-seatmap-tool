@@ -16,7 +16,7 @@ def _bundle_dir():
 
 def _candidates():
     bd = _bundle_dir()
-    for base in filter(None, [os.path.join(bd, "toho_seatmap", "fonts") if bd else None, os.path.join(_HERE, "fonts")]):
+    for base in filter(None, [os.path.join(bd, "tjoy_seatmap", "fonts") if bd else None, os.path.join(_HERE, "fonts")]):
         for pat in ("*.ttf", "*.otf", "*.ttc"):
             yield from sorted(glob.glob(os.path.join(base, pat)))
     win = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
